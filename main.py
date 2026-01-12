@@ -8,7 +8,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 # --- Configuration ---
-REFRESH_INTERVAL = 120  # seconds
+REFRESH_INTERVAL = 300  # seconds (5 minutes)
 TOTAL_WINDOWS = 20
 GRID_ROWS = 4
 GRID_COLS = 5
@@ -18,10 +18,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class NSEFetcher:
     def __init__(self):
-        self.url = "https://www.nseindia.com/market-data/most-active-equities"
+        self.url = "https://www.nseindia.com/market-data/volume-gainers-spurts"
         self.options = Options()
-        self.options.add_argument("--headless")
-        self.options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+        # self.options.add_argument("--headless")  # DISABLED to avoid detection
+        self.options.add_argument("--disable-blink-features=AutomationControlled")
+        self.options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        self.options.add_experimental_option('useAutomationExtension', False)
+        self.options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         self.driver = None
 
     def start(self):
@@ -38,17 +41,9 @@ class NSEFetcher:
             self.driver.get(self.url)
             time.sleep(3) # Wait for initial load
             
-            # Explicitly click the "Volume Spurts" tab
-            try:
-                # The tab usually has text "Volume Spurts"
-                # Using XPath to find it robustly
-                logging.info("Clicking 'Volume Spurts' tab...")
-                tab = self.driver.find_element("xpath", "//*[contains(text(), 'Volume Spurts')]")
-                tab.click()
-                time.sleep(2) # Wait for table reload
-            except Exception as e:
-                logging.warning(f"Could not click 'Volume Spurts' tab: {e}")
-                # Fallback to direct navigation if hash works, or just proceed (might be default tab)
+            # Direct URL used, no need to click tabs.
+            
+            # Now scrape table
 
             # Now scrape table
             soup = BeautifulSoup(self.driver.page_source, "html.parser")
@@ -89,6 +84,8 @@ class DhanGrid:
     def __init__(self):
         self.options = Options()
         self.options.add_argument("--start-maximized")
+        # Enable Browser Logging
+        self.options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})
         self.driver = None
 
     def start(self):
@@ -100,106 +97,9 @@ class DhanGrid:
 
     def update_charts(self, symbols):
         logging.info(f"Updating dashboard with {len(symbols)} symbols...")
+        logging.info(f"Fetched Symbols: {symbols}")
         
-        # We need to construct a robust HTML/JS payload
-        # 1. THE GRID LAYOUT & TABS
-        # 2. THE LOGIC TO "TYPE" THE SYMBOL INTO EACH IFRAME (Since URL params fail)
-        
-        # JS to be injected into the main page
-        # It handles:
-        # A. Tab Switching
-        # B. Waiting for IFrames to load
-        # C. Injecting 'Typing' logic into frames
-        
-        main_script = """
-        window.setupTabs = function() {
-            window.showTab = function(index) {
-                document.querySelectorAll('.grid-page').forEach(el => el.classList.remove('active-page'));
-                document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-                document.getElementById('tab-' + index).classList.add('active-page');
-                document.getElementById('btn-' + index).classList.add('active');
-            };
-        };
-        
-        window.injectSymbolLoader = function(iframeId, symbol) {
-            let iframe = document.getElementById(iframeId);
-            if(!iframe) return;
-            
-            iframe.onload = function() {
-                console.log("Frame loaded: " + iframeId);
-                // Wait for TradingView to fully init (e.g. 5-8 seconds)
-                setTimeout(function() {
-                    try {
-                        let doc = iframe.contentWindow.document;
-                        let win = iframe.contentWindow;
-                        
-                        console.log("Injecting symbol " + symbol + " into " + iframeId);
-                        
-                        // FIX: Explicitly click the Search Button first
-                        // Common TV selectors:
-                        // 1. global-header search (Dhan specific?)
-                        // 2. [data-name="header-toolbar-symbol-search"] (Standard TV)
-                        
-                        let searchBtn = doc.querySelector('[data-name="header-toolbar-symbol-search"]') || 
-                                        doc.querySelector('[class*="button-"] [class*="search-"]'); // Generic fallback
-                        
-                        if(searchBtn) {
-                           console.log("Found search button, clicking...");
-                           searchBtn.click();
-                        } else {
-                           // Try just typing on body (sometimes works if focused)
-                           console.log("Search button not found, focusing body...");
-                           win.focus();
-                           doc.body.focus();
-                        }
-                        
-                        setTimeout(function() {
-                            // Now dispatch typing events
-                            // Either into the popup input (if it appeared) or body
-                            
-                            let searchInput = doc.querySelector('input[data-role="search"]') || 
-                                              doc.querySelector('input.search-input') ||
-                                              doc.activeElement; // The popup usually focuses the input
-                                              
-                            if(searchInput && searchInput.tagName === 'INPUT') {
-                                console.log("Typing into input field...");
-                                searchInput.value = symbol;
-                                searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                searchInput.dispatchEvent(new Event('change', { bubbles: true }));
-                                
-                                // Press Enter on the input
-                                setTimeout(function() {
-                                    searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                                }, 500);
-                                
-                            } else {
-                                // Fallback: Simulate raw keystrokes on body
-                                console.log("Typing on body...");
-                                function typeString(str) {
-                                    for(let i=0; i<str.length; i++) {
-                                        let key = str[i];
-                                        let code = key.charCodeAt(0);
-                                        doc.body.dispatchEvent(new KeyboardEvent('keydown', { key: key, code: 'Key'+key.toUpperCase(), charCode: code, keyCode: code, which: code, bubbles: true }));
-                                        doc.body.dispatchEvent(new KeyboardEvent('keypress', { key: key, code: 'Key'+key.toUpperCase(), charCode: code, keyCode: code, which: code, bubbles: true }));
-                                        doc.body.dispatchEvent(new KeyboardEvent('keyup', { key: key, code: 'Key'+key.toUpperCase(), charCode: code, keyCode: code, which: code, bubbles: true }));
-                                    }
-                                }
-                                typeString(symbol);
-                                
-                                setTimeout(function() {
-                                     doc.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                                }, 1500);
-                            }
-                            
-                        }, 1000); // Wait for search box to open
-                        
-                    } catch(e) {
-                         console.error("Injection failed for " + iframeId + ": " + e);
-                    }
-                }, 12000); // Increased wait time to 12s to ensure TV is ready
-            };
-        };
-        """
+        # 1. GENERATE GRID (HTML/CSS ONLY)
         
         style = """
             body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
@@ -212,9 +112,18 @@ class DhanGrid:
             iframe { width: 100%; height: 100%; border: none; background: #000; }
         """
         
-        # Build HTML Structure
+        tab_script = """
+        window.showTab = function(index) {
+            document.querySelectorAll('.grid-page').forEach(el => el.classList.remove('active-page'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById('tab-' + index).classList.add('active-page');
+            document.getElementById('btn-' + index).classList.add('active');
+        };
+        """
+        
         html_content = '<div id="custom-ui" style="position:absolute; top:0; left:0; width:100%; height:100%; z-index:99999; background:#000;">'
         html_content += f'<style>{style}</style>'
+        html_content += f'<script>{tab_script}</script>'
         
         # Tabs
         html_content += '<div class="tab-bar">'
@@ -223,55 +132,125 @@ class DhanGrid:
             html_content += f'<button id="btn-{i}" class="tab-btn {active}" onclick="showTab({i})">PAGE {i+1}</button>'
         html_content += '</div>'
         
-        # Pages
+        # Pages and Iframes
         chunks = [symbols[i:i + 6] for i in range(0, len(symbols), 6)]
         while len(chunks) < 4: chunks.append([])
         
-        script_calls = ""
+        mapping_data = [] # Store (iframe_id, symbol, page_index) to process later
         
         for i in range(4):
             active_page = "active-page" if i == 0 else ""
             chunk = chunks[i]
-            
             html_content += f'<div id="tab-{i}" class="grid-page {active_page}">'
             
             for slot_idx in range(6):
                 if slot_idx < len(chunk):
                     s = chunk[slot_idx]
-                    # We use unique ID to target this iframe for JS injection
                     fid = f"chart-frame-{i}-{slot_idx}"
-                    # Base URL only
-                    url = "https://tv.dhan.co/"
+                    url = "https://tv.dhan.co/" # Clean URL
                     html_content += f'<iframe id="{fid}" src="{url}" allow="autoplay; encrypted-media"></iframe>'
-                    
-                    # Add JS call to inject symbol later
-                    script_calls += f"injectSymbolLoader('{fid}', '{s}');\n"
+                    mapping_data.append((fid, s, i)) 
                 else:
                     html_content += '<div style="background:#111;"></div>' 
-            
             html_content += '</div>'
-            
         html_content += '</div>'
         
-        # Execute Injection
-        # We append the SCRIPT element properly to ensure it runs
-        js_cmd = f"""
-            // 1. Wipe Body
-            document.body.innerHTML = `{html_content}`;
-            
-            // 2. Add Logic Script
-            var s = document.createElement('script');
-            s.textContent = `{main_script}`;
-            document.head.appendChild(s);
-            
-            // 3. Init Tabs
-            window.setupTabs();
-            
-            // 4. Hook up frames
-            {script_calls}
-        """
+        # Inject HTML
+        self.driver.execute_script(f"document.body.innerHTML = `{html_content}`;")
+        self.driver.execute_script(f"var s = document.createElement('script'); s.text = `{tab_script}`; document.body.appendChild(s);")
         
-        self.driver.execute_script(js_cmd)
+        # 2. PYTHON-DRIVEN INTERACTION
+        logging.info("Waiting 10s for charts to init...")
+        time.sleep(10)
+        
+        from selenium.webdriver.common.action_chains import ActionChains
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        
+        # Sort Data
+        charts_by_page = {0: [], 1: [], 2: [], 3: []}
+        for fid, symbol, page_idx in mapping_data:
+            charts_by_page[page_idx].append((fid, symbol))
+            
+        # Interact
+        for page_idx in range(4):
+            charts = charts_by_page[page_idx]
+            if not charts: continue
+            
+            logging.info(f"=== Processing Page {page_idx + 1} ===")
+            self.driver.switch_to.default_content()
+            
+            # Switch Tab
+            try:
+                # Safety: ESC to close any open dialogs from previous tab interaction
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                
+                btn = self.driver.find_element(By.ID, f"btn-{page_idx}")
+                self.driver.execute_script("arguments[0].click();", btn)
+                # Wait for display:block to take effect
+                time.sleep(1.5)
+            except Exception as e:
+                logging.error(f"Tab switch error: {e}")
+                continue
+                
+            for fid, symbol in charts:
+                try:
+                    self.driver.switch_to.default_content()
+                    
+                    # Wait for Frame
+                    try:
+                        iframe = WebDriverWait(self.driver, 3).until(EC.visibility_of_element_located((By.ID, fid)))
+                        self.driver.switch_to.frame(iframe)
+                    except:
+                        logging.warning(f"Skipping invisible frame {fid}")
+                        continue
+                        
+                    # STRATEGY: Center Click + Type (Canvas Interaction)
+                    # This works by focusing the chart canvas directly
+                    try:
+                        body = self.driver.find_element(By.TAG_NAME, "body")
+                        actions = ActionChains(self.driver)
+                        
+                        # 1. Click Center to Focus (Coordinates relative to element center if no offset? No, element top-left)
+                        # move_to_element moves to center. click() clicks current pos.
+                        # So move_to_element(body).click() clicks dead center of chart. Safe.
+                        actions.move_to_element(body).click().perform()
+                        # Short pause for focus
+                        time.sleep(0.2)
+                        
+                        # 2. Type Symbol + Enter
+                        actions.send_keys(symbol)
+                        time.sleep(0.8) # Wait for TV search UI to appear/filter
+                        actions.send_keys(Keys.ENTER)
+                        actions.perform()
+                        
+                        logging.info(f"Injected {symbol} (Center-Click Strategy)")
+                        
+                        # Short pause to prevent overlapped inputs
+                        time.sleep(0.3)
+                        
+                    except Exception as e:
+                        logging.error(f"Interaction failed for {fid}: {e}")
+                        
+                except Exception as e:
+                    logging.error(f"Frame error {fid}: {e}")
+                    
+        self.driver.switch_to.default_content()
+        logging.info("Update Complete.")
+
+    def check_console(self):
+        if not self.driver: return
+        try:
+            logs = self.driver.get_log('browser')
+            for entry in logs:
+                # Filter for our own logs or errors
+                msg = entry['message']
+                if "Injecting" in msg or "Frame loaded" in msg or "Search button" in msg or "SEVERE" in str(entry['level']):
+                    logging.info(f"JS CONSOLE: {msg}")
+        except Exception:
+            pass
 
     def close(self):
         if self.driver:
@@ -293,14 +272,25 @@ def main():
         input("Press Enter here AFTER you are fully logged in and see the chart...")
         
         while True:
-            symbols = fetcher.get_top_symbols(limit=20)
+            # Fetch 30 to ensure we have enough after skipping
+            symbols = fetcher.get_top_symbols(limit=30)
+            
             if symbols:
+                # User Request: Skip top symbol, show next 24 (4 tabs * 6 charts)
+                if len(symbols) > 1:
+                    symbols = symbols[1:25]
+                    
                 grid.update_charts(symbols)
             else:
                 logging.warning("No symbols fetched.")
                 
             logging.info(f"Sleeping for {REFRESH_INTERVAL} seconds...")
-            time.sleep(REFRESH_INTERVAL)
+            # Sleep in chunks to check logs
+            for _ in range(30): # Check logs for first 30 seconds
+                time.sleep(1)
+                grid.check_console()
+            
+            time.sleep(REFRESH_INTERVAL - 30)
             
     except KeyboardInterrupt:
         logging.info("Stopping...")
